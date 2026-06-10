@@ -1,0 +1,8 @@
+/venv
+/input_files
+/ocr_results
+/Tesseract-OCR
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
