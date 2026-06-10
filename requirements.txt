@@ -1,8 +1,14 @@
-# requirements.txt — PaddleOCR only, Linux CPU
-# Install: pip install -r requirements.txt
+# Web server
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9    
+jinja2>=3.1.0              
 
+# PDF rendering
 PyMuPDF>=1.24.0
 Pillow>=10.0.0
+
+# OCR
 numpy>=1.26.0
-paddlepaddle>=3.1.1
-paddleocr>=3.6.0
+paddlepaddle==3.2.2
+paddleocr>=3.3.2

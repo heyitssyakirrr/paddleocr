@@ -1,55 +1,18 @@
-"""
-paddle_ocr.py
-=============
-Simple PaddleOCR text extractor — Linux, CPU only.
-Outputs extracted text only, no metrics, no confidence scores.
-
-Usage:
-    python paddle_ocr.py --folder input_files
-    python paddle_ocr.py --folder input_files --dpi 400
-    python paddle_ocr.py --folder input_files --output-dir results
-"""
-
 from __future__ import annotations
-import argparse
+
+# Must be set BEFORE any paddle import — C++ runtime reads it at DLL init time.
+import os
+os.environ["FLAGS_use_mkldnn"] = "0"
+
 import io
-import sys
 import time
+import logging
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# PDF rendering
-# ---------------------------------------------------------------------------
-
-def pdf_to_images(pdf_path: str, dpi: int = 300) -> list[tuple[int, object]]:
-    try:
-        import fitz
-    except ImportError:
-        sys.exit("[ERROR] PyMuPDF not installed.  pip install PyMuPDF")
-    try:
-        from PIL import Image
-    except ImportError:
-        sys.exit("[ERROR] Pillow not installed.  pip install Pillow")
-
-    doc  = fitz.open(pdf_path)
-    mat  = fitz.Matrix(dpi / 72, dpi / 72)
-    imgs = []
-
-    for page_num, page in enumerate(doc, start=1):
-        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        imgs.append((page_num, img))
-        print("  [PDF] Page %d rendered at %d DPI: %dx%d px" % (
-            page_num, dpi, img.size[0], img.size[1]
-        ))
-
-    doc.close()
-    return imgs
-
-
-# ---------------------------------------------------------------------------
-# PaddleOCR
+# Singleton OCR instance
 # ---------------------------------------------------------------------------
 
 _ocr_instance = None
@@ -60,7 +23,14 @@ def _get_ocr():
     if _ocr_instance is not None:
         return _ocr_instance
 
-    from paddleocr import PaddleOCR
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError:
+        raise RuntimeError(
+            "PaddleOCR not installed. Run: pip install paddlepaddle==3.2.2 paddleocr>=3.3.2"
+        )
+
+    logger.info("Loading PP-OCRv5 model (CPU)...")
     _ocr_instance = PaddleOCR(
         lang="en",
         use_doc_orientation_classify=False,
@@ -71,40 +41,98 @@ def _get_ocr():
         text_det_unclip_ratio=1.8,
         text_recognition_batch_size=6,
         text_rec_score_thresh=0.0,
+        # ── oneDNN / Windows fix ──────────────────────────────────────────
+        # Forces PaddleX to use run_mode="paddle" (standard CPU kernels)
+        # instead of the default run_mode="mkldnn", bypassing the broken
+        # PIR/MKLDNN code path in PaddlePaddle 3.3.0+.
+        enable_mkldnn=False,
+        # ─────────────────────────────────────────────────────────────────
     )
+    logger.info("Model loaded.")
     return _ocr_instance
 
 
-def run_paddle(images: list) -> str:
-    try:
-        import numpy as np
-        from paddleocr import PaddleOCR  # noqa: F401
-    except ImportError:
-        sys.exit("[ERROR] PaddleOCR not installed.  pip install paddlepaddle>=3.1.1 paddleocr>=3.6.0")
+# ---------------------------------------------------------------------------
+# PDF → PIL images
+# ---------------------------------------------------------------------------
 
+def _pdf_to_images(pdf_path: str, dpi: int = 300) -> list[tuple[int, object]]:
+    """Render every page of a PDF to a PIL Image at the given DPI."""
+    try:
+        import fitz
+    except ImportError:
+        raise RuntimeError("PyMuPDF not installed. Run: pip install PyMuPDF")
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError("Pillow not installed. Run: pip install Pillow")
+
+    doc = fitz.open(pdf_path)
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    images: list[tuple[int, object]] = []
+
+    for page_num, page in enumerate(doc, start=1):
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        img = __import__("PIL.Image", fromlist=["Image"]).open(
+            io.BytesIO(pix.tobytes("png"))
+        )
+        images.append((page_num, img))
+        logger.debug("Page %d rendered at %d DPI (%dx%d px)", page_num, dpi, *img.size)
+
+    doc.close()
+    return images
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def process_pdf(pdf_path: str, dpi: int = 300) -> str:
+    """
+    Run OCR on a PDF file and return extracted text as a single string.
+
+    Parameters
+    ----------
+    pdf_path : str | Path
+        Absolute or relative path to the PDF file.
+    dpi : int
+        Render resolution. Use 300 for standard docs, 400 for degraded scans.
+
+    Returns
+    -------
+    str
+        Extracted text, one OCR'd line per newline. Empty string if no text found.
+
+    Raises
+    ------
+    RuntimeError
+        If a required dependency is missing or the model fails to load.
+    Exception
+        Propagates any unexpected error from PaddleOCR or PyMuPDF.
+    """
     import numpy as np
 
-    print("  [PaddleOCR] Loading PP-OCRv5 model (CPU)...")
-    try:
-        ocr = _get_ocr()
-    except Exception as exc:
-        sys.exit("[ERROR] PaddleOCR model load failed: %s" % exc)
+    pdf_path = str(pdf_path)
+    logger.info("Processing: %s at %d DPI", pdf_path, dpi)
+
+    images = _pdf_to_images(pdf_path, dpi=dpi)
+    ocr    = _get_ocr()
 
     all_lines: list[str] = []
     t0 = time.time()
 
     for page_num, img in images:
-        print("  [PaddleOCR] Processing page %d..." % page_num)
+        logger.debug("OCR on page %d...", page_num)
         img_array = np.array(img.convert("RGB"))
 
         try:
             results = ocr.predict(img_array)
         except Exception as exc:
-            print("    [PaddleOCR] Page %d error: %s" % (page_num, exc))
+            logger.warning("Page %d OCR error: %s", page_num, exc)
             continue
 
         if not results:
-            print("    [PaddleOCR] Page %d: no text detected." % page_num)
+            logger.debug("Page %d: no text detected.", page_num)
             continue
 
         for page_result in results:
@@ -114,119 +142,11 @@ def run_paddle(images: list) -> str:
             rec_scores = page_result.get("rec_scores", []) or []
             if len(rec_scores) < len(rec_texts):
                 rec_scores = list(rec_scores) + [0.0] * (len(rec_texts) - len(rec_scores))
-            for text, score in zip(rec_texts, rec_scores):
+            for text, _score in zip(rec_texts, rec_scores):
                 text = str(text).strip()
                 if text:
                     all_lines.append(text)
 
     elapsed = time.time() - t0
-    print("  [PaddleOCR] Done in %.1fs" % elapsed)
+    logger.info("Done in %.1fs — %d lines extracted", elapsed, len(all_lines))
     return "\n".join(all_lines)
-
-
-# ---------------------------------------------------------------------------
-# File selection
-# ---------------------------------------------------------------------------
-
-def list_pdfs(folder: str) -> list[Path]:
-    folder_path = Path(folder)
-    if not folder_path.exists():
-        sys.exit("[ERROR] Folder not found: %s" % folder)
-    pdfs = sorted(folder_path.glob("*.pdf"))
-    if not pdfs:
-        sys.exit("[ERROR] No PDF files found in: %s" % folder)
-    return pdfs
-
-
-def pick_files(pdfs: list[Path]) -> list[Path]:
-    print("\nPDF files found:")
-    for i, p in enumerate(pdfs, start=1):
-        print("  [%d] %s" % (i, p.name))
-    print("  [A] All files\n")
-    choice = input("Select file(s) — number(s) comma-separated, or A for all: ").strip()
-
-    if choice.upper() == "A":
-        return pdfs
-
-    selected: list[Path] = []
-    for part in choice.split(","):
-        part = part.strip()
-        if part.isdigit():
-            idx = int(part) - 1
-            if 0 <= idx < len(pdfs):
-                selected.append(pdfs[idx])
-            else:
-                print("  [WARN] Invalid number: %s (skipped)" % part)
-        else:
-            print("  [WARN] Invalid input: %s (skipped)" % part)
-
-    if not selected:
-        sys.exit("[ERROR] No valid files selected.")
-    return selected
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="PaddleOCR text extractor — Linux CPU only.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  python paddle_ocr.py\n"
-            "  python paddle_ocr.py --folder input_files\n"
-            "  python paddle_ocr.py --folder input_files --dpi 400\n"
-            "  python paddle_ocr.py --folder input_files --output-dir results\n"
-        ),
-    )
-    parser.add_argument("--folder",     default="input_files",
-                        help="Folder containing PDF files (default: input_files)")
-    parser.add_argument("--dpi",        type=int, default=300,
-                        help="PDF render DPI (default: 300; try 400 for degraded scans)")
-    parser.add_argument("--output-dir", default="ocr_results",
-                        help="Output folder for result files (default: ocr_results)")
-    args = parser.parse_args()
-
-    pdfs          = list_pdfs(args.folder)
-    selected_pdfs = pick_files(pdfs)
-    output_dir    = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("\nSelected : %s" % ", ".join(p.name for p in selected_pdfs))
-    print("DPI      : %d" % args.dpi)
-    print("Output   : %s" % output_dir)
-    print()
-
-    for pdf_path in selected_pdfs:
-        print("\n" + "=" * 60)
-        print("  FILE: %s" % pdf_path.name)
-        print("=" * 60)
-
-        try:
-            images  = pdf_to_images(str(pdf_path), dpi=args.dpi)
-            text    = run_paddle(images)
-            n_lines = len([l for l in text.split("\n") if l.strip()])
-
-            # Write output — plain text only
-            stem     = pdf_path.stem.lower().replace(" ", "_")
-            out_file = output_dir / ("paddle_%s.txt" % stem)
-            out_file.write_text(text, encoding="utf-8")
-
-            print("  Lines extracted : %d" % n_lines)
-            print("  Saved           : %s" % out_file)
-
-        except Exception as exc:
-            print("  [ERROR] %s: %s" % (pdf_path.name, exc))
-
-    print("\n" + "=" * 60)
-    print("  DONE — results saved to: %s/" % output_dir)
-    print("=" * 60)
-    for f in sorted(output_dir.glob("paddle_*.txt")):
-        print("  - %s" % f.name)
-    print()
-
-
-if __name__ == "__main__":
-    main()

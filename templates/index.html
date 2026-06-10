@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OCR Document Processor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:      #003366;
+      --navy-mid:  #004080;
+      --blue-lt:   #e8f0f8;
+      --white:     #ffffff;
+      --grey-bg:   #f4f6f8;
+      --grey-line: #d0d7de;
+      --grey-text: #5a6472;
+      --green:     #1a7a3c;
+      --green-bg:  #eaf5ee;
+      --red:       #b91c1c;
+      --red-bg:    #fef2f2;
+      --font:      'Segoe UI', Arial, sans-serif;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--grey-bg);
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--navy);
+      color: var(--white);
+      padding: 0 32px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 3px solid #f0a500;
+    }
+    header .brand {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    header .brand span {
+      font-weight: 400;
+      opacity: 0.7;
+      margin-left: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    /* ── Nav strip ── */
+    .subnav {
+      background: var(--navy-mid);
+      padding: 0 32px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+    .subnav a {
+      color: rgba(255,255,255,0.75);
+      text-decoration: none;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+    }
+    .subnav a.active { color: #fff; border-bottom: 2px solid #f0a500; padding-bottom: 2px; }
+
+    /* ── Page layout ── */
+    .page {
+      max-width: 900px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+
+    .page-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 4px;
+    }
+    .page-sub {
+      font-size: 13px;
+      color: var(--grey-text);
+      margin-bottom: 24px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--white);
+      border: 1px solid var(--grey-line);
+      border-radius: 2px;
+      margin-bottom: 20px;
+    }
+    .card-head {
+      background: var(--blue-lt);
+      border-bottom: 1px solid var(--grey-line);
+      padding: 10px 20px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--navy);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .card-body { padding: 20px; }
+
+    /* ── Upload zone ── */
+    .drop-zone {
+      border: 2px dashed var(--grey-line);
+      background: var(--grey-bg);
+      border-radius: 2px;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      position: relative;
+    }
+    .drop-zone.drag-over {
+      border-color: var(--navy);
+      background: var(--blue-lt);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer;
+    }
+    .drop-zone .dz-icon {
+      display: block;
+      width: 40px; height: 40px;
+      margin: 0 auto 12px;
+      opacity: 0.35;
+    }
+    .drop-zone .dz-label {
+      font-size: 14px;
+      color: var(--navy);
+      font-weight: 600;
+    }
+    .drop-zone .dz-hint {
+      font-size: 12px;
+      color: var(--grey-text);
+      margin-top: 4px;
+    }
+
+    /* ── File queue ── */
+    #file-queue {
+      margin-top: 16px;
+      display: none;
+    }
+    #file-queue .queue-label {
+      font-size: 12px;
+      color: var(--grey-text);
+      margin-bottom: 6px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .queue-list {
+      list-style: none;
+      border: 1px solid var(--grey-line);
+    }
+    .queue-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--grey-line);
+      background: var(--white);
+    }
+    .queue-list li:last-child { border-bottom: none; }
+    .queue-list li .fn { color: var(--navy); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-list li .fsz { color: var(--grey-text); font-size: 12px; margin-left: 12px; flex-shrink: 0; }
+    .queue-list li .rm {
+      background: none; border: none; cursor: pointer;
+      color: var(--grey-text); font-size: 16px; line-height: 1;
+      margin-left: 8px; padding: 0 4px;
+    }
+    .queue-list li .rm:hover { color: var(--red); }
+
+    /* ── Options row ── */
+    .options-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .options-row label {
+      font-size: 13px;
+      color: var(--navy);
+      font-weight: 600;
+    }
+    .options-row select {
+      border: 1px solid var(--grey-line);
+      background: var(--white);
+      padding: 5px 10px;
+      font-size: 13px;
+      border-radius: 2px;
+      color: #1a1a2e;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 20px;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      border-radius: 2px;
+      text-decoration: none;
+      letter-spacing: 0.02em;
+      transition: background 0.12s;
+    }
+    .btn-primary { background: var(--navy); color: var(--white); }
+    .btn-primary:hover:not(:disabled) { background: var(--navy-mid); }
+    .btn-primary:disabled { background: #8a9bb0; cursor: not-allowed; }
+    .btn-secondary { background: var(--white); color: var(--navy); border: 1px solid var(--navy); }
+    .btn-secondary:hover:not(:disabled) { background: var(--blue-lt); }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-danger { background: var(--white); color: var(--red); border: 1px solid var(--red); }
+    .btn-danger:hover { background: var(--red-bg); }
+
+    /* ── Action bar ── */
+    .action-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid var(--grey-line);
+    }
+
+    /* ── Progress bar ── */
+    #progress-wrap {
+      display: none;
+      margin-top: 16px;
+    }
+    .prog-label {
+      font-size: 12px;
+      color: var(--grey-text);
+      margin-bottom: 6px;
+    }
+    .prog-track {
+      height: 6px;
+      background: var(--grey-line);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .prog-bar {
+      height: 100%;
+      background: var(--navy);
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .prog-bar.indeterminate {
+      width: 40%;
+      animation: slide 1.2s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+
+    /* ── Results table ── */
+    #results-section { display: none; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    thead th {
+      background: var(--blue-lt);
+      color: var(--navy);
+      font-weight: 700;
+      text-align: left;
+      padding: 9px 12px;
+      border-bottom: 2px solid var(--grey-line);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+    tbody tr { border-bottom: 1px solid var(--grey-line); }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #fafbfc; }
+    tbody td { padding: 9px 12px; vertical-align: middle; }
+    td.col-name { color: var(--navy); font-weight: 500; word-break: break-all; }
+    td.col-lines { color: var(--grey-text); text-align: right; }
+    td.col-status { text-align: center; }
+    td.col-action { text-align: right; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 2px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .badge-done    { background: var(--green-bg); color: var(--green); }
+    .badge-error   { background: var(--red-bg);   color: var(--red); }
+    .badge-running { background: var(--blue-lt);  color: var(--navy); }
+
+    .dl-link {
+      font-size: 12px;
+      color: var(--navy);
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid var(--navy);
+      padding: 3px 10px;
+      border-radius: 2px;
+      display: inline-block;
+    }
+    .dl-link:hover { background: var(--blue-lt); }
+
+    .err-msg {
+      font-size: 11px;
+      color: var(--red);
+      margin-top: 2px;
+    }
+
+    /* ── Download-all bar ── */
+    #dl-all-bar {
+      display: none;
+      background: var(--blue-lt);
+      border: 1px solid var(--grey-line);
+      border-top: none;
+      padding: 12px 20px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #dl-all-bar span { font-size: 13px; color: var(--navy); }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--grey-text);
+      padding: 24px 0 32px;
+      border-top: 1px solid var(--grey-line);
+      margin-top: 8px;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      .page { padding: 0 10px; }
+      .options-row { flex-wrap: wrap; }
+      thead th:nth-child(2), tbody td:nth-child(2) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="brand">OCR Services <span>Document Processing</span></div>
+  <div style="font-size:12px;opacity:0.6;">PP-OCRv5 · CPU</div>
+</header>
+
+<div class="subnav">
+  <a href="#" class="active">Text Extraction</a>
+</div>
+
+<div class="page">
+  <div class="page-title">PDF Text Extraction</div>
+  <div class="page-sub">Upload PDF files to extract text. Results are downloaded as .txt files.</div>
+
+  <!-- Upload card -->
+  <div class="card">
+    <div class="card-head">Upload Documents</div>
+    <div class="card-body">
+
+      <div class="drop-zone" id="drop-zone">
+        <input type="file" id="file-input" accept=".pdf" multiple />
+        <svg class="dz-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+        </svg>
+        <div class="dz-label">Click to select files or drag and drop</div>
+        <div class="dz-hint">PDF files only · Multiple files supported</div>
+      </div>
+
+      <div id="file-queue">
+        <div class="queue-label">Selected files</div>
+        <ul class="queue-list" id="queue-list"></ul>
+      </div>
+
+      <div class="options-row">
+        <label for="dpi-select">Render DPI</label>
+        <select id="dpi-select">
+          <option value="300" selected>300 — Standard</option>
+          <option value="400">400 — High quality / degraded scans</option>
+        </select>
+      </div>
+
+      <div id="progress-wrap">
+        <div class="prog-label" id="prog-label">Processing…</div>
+        <div class="prog-track"><div class="prog-bar indeterminate" id="prog-bar"></div></div>
+      </div>
+
+      <div class="action-bar">
+        <button class="btn btn-primary" id="run-btn" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Run OCR
+        </button>
+        <button class="btn btn-secondary" id="clear-queue-btn" disabled>Clear</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Results card -->
+  <div class="card" id="results-section">
+    <div class="card-head">Results</div>
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th style="text-align:right">Lines</th>
+          <th style="text-align:center">Status</th>
+          <th style="text-align:right">Download</th>
+        </tr>
+      </thead>
+      <tbody id="results-tbody"></tbody>
+    </table>
+    <div id="dl-all-bar">
+      <span id="dl-all-count"></span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-danger" id="clear-results-btn">Clear results</button>
+        <a href="/download-all" class="btn btn-primary" id="dl-all-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download All (.zip)
+        </a>
+      </div>
+    </div>
+  </div>
+
+</div><!-- .page -->
+
+<footer>PaddleOCR PP-OCRv5 · CPU Inference · Linux</footer>
+
+<script>
+  const dropZone       = document.getElementById('drop-zone');
+  const fileInput      = document.getElementById('file-input');
+  const queueWrap      = document.getElementById('file-queue');
+  const queueList      = document.getElementById('queue-list');
+  const runBtn         = document.getElementById('run-btn');
+  const clearQueueBtn  = document.getElementById('clear-queue-btn');
+  const progressWrap   = document.getElementById('progress-wrap');
+  const progLabel      = document.getElementById('prog-label');
+  const progBar        = document.getElementById('prog-bar');
+  const resultsSection = document.getElementById('results-section');
+  const resultsTbody   = document.getElementById('results-tbody');
+  const dlAllBar       = document.getElementById('dl-all-bar');
+  const dlAllCount     = document.getElementById('dl-all-count');
+  const clearResultsBtn= document.getElementById('clear-results-btn');
+
+  let selectedFiles = [];   // DataTransfer-style file list mirror
+  let successCount  = 0;
+
+  // ── Drag & drop ──────────────────────────────────────────────────────────
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', ()=> dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    addFiles([...e.dataTransfer.files]);
+  });
+  fileInput.addEventListener('change', () => {
+    addFiles([...fileInput.files]);
+    fileInput.value = '';
+  });
+
+  function addFiles(files) {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    pdfs.forEach(f => {
+      if (!selectedFiles.find(s => s.name === f.name && s.size === f.size)) {
+        selectedFiles.push(f);
+      }
+    });
+    renderQueue();
+  }
+
+  function renderQueue() {
+    if (selectedFiles.length === 0) {
+      queueWrap.style.display = 'none';
+      runBtn.disabled = true;
+      clearQueueBtn.disabled = true;
+      return;
+    }
+    queueWrap.style.display = 'block';
+    runBtn.disabled = false;
+    clearQueueBtn.disabled = false;
+    queueList.innerHTML = '';
+    selectedFiles.forEach((f, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `
+        <span class="fn" title="${esc(f.name)}">${esc(f.name)}</span>
+        <span class="fsz">${fmtSize(f.size)}</span>
+        <button class="rm" title="Remove" data-i="${i}">×</button>`;
+      queueList.appendChild(li);
+    });
+    queueList.querySelectorAll('.rm').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectedFiles.splice(+btn.dataset.i, 1);
+        renderQueue();
+      });
+    });
+  }
+
+  clearQueueBtn.addEventListener('click', () => {
+    selectedFiles = [];
+    renderQueue();
+  });
+
+  // ── Run OCR ──────────────────────────────────────────────────────────────
+  runBtn.addEventListener('click', async () => {
+    if (selectedFiles.length === 0) return;
+
+    // UI: lock
+    runBtn.disabled = true;
+    clearQueueBtn.disabled = true;
+    progressWrap.style.display = 'block';
+    progBar.className = 'prog-bar indeterminate';
+    progLabel.textContent = `Processing ${selectedFiles.length} file(s)…`;
+
+    const dpi  = document.getElementById('dpi-select').value;
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append('files', f));
+    form.append('dpi', dpi);
+
+    let data;
+    try {
+      const resp = await fetch('/upload', { method: 'POST', body: form });
+      data = await resp.json();
+    } catch (err) {
+      progLabel.textContent = 'Network error: ' + err.message;
+      progBar.className = 'prog-bar';
+      progBar.style.width = '0%';
+      runBtn.disabled = false;
+      clearQueueBtn.disabled = false;
+      return;
+    }
+
+    // UI: done
+    progressWrap.style.display = 'none';
+    progBar.className = 'prog-bar';
+    progBar.style.width = '0%';
+
+    if (data.error) {
+      alert('Server error: ' + data.error);
+      runBtn.disabled = false;
+      clearQueueBtn.disabled = false;
+      return;
+    }
+
+    renderResults(data.results);
+
+    // Clear queue after successful run
+    selectedFiles = [];
+    renderQueue();
+    runBtn.disabled = true;
+    clearQueueBtn.disabled = true;
+  });
+
+  // ── Render results ───────────────────────────────────────────────────────
+  function renderResults(results) {
+    resultsSection.style.display = 'block';
+    successCount = 0;
+
+    results.forEach(r => {
+      const tr = document.createElement('tr');
+
+      let statusCell, actionCell;
+      if (r.status === 'done') {
+        successCount++;
+        statusCell = `<span class="badge badge-done">Done</span>`;
+        actionCell = `<a class="dl-link" href="/download/${encodeURIComponent(r.output)}" download="${esc(r.output)}">Download</a>`;
+      } else {
+        statusCell = `<span class="badge badge-error">Error</span>`;
+        actionCell = `<span style="font-size:11px;color:#999">—</span>`;
+      }
+
+      tr.innerHTML = `
+        <td class="col-name">
+          ${esc(r.original)}
+          ${r.error ? `<div class="err-msg">${esc(r.error)}</div>` : ''}
+        </td>
+        <td class="col-lines">${r.lines > 0 ? r.lines.toLocaleString() : '—'}</td>
+        <td class="col-status">${statusCell}</td>
+        <td class="col-action">${actionCell}</td>`;
+      resultsTbody.appendChild(tr);
+    });
+
+    if (successCount > 0) {
+      dlAllBar.style.display = 'flex';
+      dlAllCount.textContent = `${successCount} result file${successCount > 1 ? 's' : ''} ready`;
+    }
+  }
+
+  // ── Clear results ────────────────────────────────────────────────────────
+  clearResultsBtn.addEventListener('click', async () => {
+    if (!confirm('Remove all result files from the server?')) return;
+    await fetch('/clear', { method: 'DELETE' });
+    resultsTbody.innerHTML = '';
+    resultsSection.style.display = 'none';
+    dlAllBar.style.display = 'none';
+    successCount = 0;
+  });
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmtSize(bytes) {
+    if (bytes < 1024)       return bytes + ' B';
+    if (bytes < 1024*1024)  return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/1024/1024).toFixed(1) + ' MB';
+  }
+</script>
+</body>
+</html>
