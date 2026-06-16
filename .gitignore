@@ -1,6 +1,7 @@
 /venv
 /input_files
-/ocr_results
+/results
+/uploads
 /Tesseract-OCR
 __pycache__/
 *.pyc
