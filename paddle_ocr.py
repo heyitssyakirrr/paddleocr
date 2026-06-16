@@ -27,12 +27,14 @@ def _get_ocr():
     _ocr_instance = PaddleOCR(
         lang="en",
         text_detection_model_name="PP-OCRv5_mobile_det",
+        det_limit_side_len=5000,    # raise the cap above your 4,678 px height
+        det_limit_type="max",       # "max" = limit applies to the longest side
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
         text_det_thresh=0.3,
         text_det_box_thresh=0.5,
-        text_det_unclip_ratio=1.8,
+        text_det_unclip_ratio=1.5,
         text_recognition_batch_size=6,
         text_rec_score_thresh=0.0,
         enable_mkldnn=False,
@@ -73,6 +75,7 @@ def _pdf_to_images(pdf_path: str, dpi: int = 300) -> list[tuple[int, object]]:
 
 def process_pdf(pdf_path: str, dpi: int = 300) -> str:
     import numpy as np
+    import re
 
     pdf_path = str(pdf_path)
     logger.info("Processing: %s at %d DPI", pdf_path, dpi)
@@ -82,6 +85,12 @@ def process_pdf(pdf_path: str, dpi: int = 300) -> str:
 
     all_lines: list[str] = []
     t0 = time.time()
+
+    # Scale thresholds with DPI so behaviour is consistent regardless of render resolution
+    dpi_scale = dpi / 300.0
+    y_group_threshold = int(20 * dpi_scale)   # pixels; lines within this are on the same row
+    y_bucket_size = int(15 * dpi_scale)        # rounding bucket for coarse y-sort
+    space_gap_ratio = 0.5                       # gap must be > this × avg_char_width to insert space
 
     for page_num, img_array in images:
         logger.debug("OCR on page %d...", page_num)
@@ -106,7 +115,6 @@ def process_pdf(pdf_path: str, dpi: int = 300) -> str:
             if len(rec_scores) < len(rec_texts):
                 rec_scores = list(rec_scores) + [0.0] * (len(rec_texts) - len(rec_scores))
 
-            # Pair each text with its bounding box x-start and y-center
             boxes = []
             for i, (text, _score) in enumerate(zip(rec_texts, rec_scores)):
                 text = str(text).strip()
@@ -124,16 +132,16 @@ def process_pdf(pdf_path: str, dpi: int = 300) -> str:
                     x_min, y_center, width = 0, 0, 0
                 boxes.append((y_center, x_min, x_max, width, text))
 
-            # Sort by y first (top to bottom), then x (left to right)
-            boxes.sort(key=lambda b: (round(b[0] / 15), b[1]))
+            # Sort: coarse y bucket first, then x
+            boxes.sort(key=lambda b: (round(b[0] / y_bucket_size), b[1]))
 
-            # Group into lines by y proximity, then insert spaces by x gaps
+            # Group into lines by y proximity
             line_groups = []
             current_group = []
             prev_y = None
             for item in boxes:
                 y_center = item[0]
-                if prev_y is None or abs(y_center - prev_y) < 20:
+                if prev_y is None or abs(y_center - prev_y) < y_group_threshold:
                     current_group.append(item)
                 else:
                     line_groups.append(current_group)
@@ -146,12 +154,11 @@ def process_pdf(pdf_path: str, dpi: int = 300) -> str:
                 group.sort(key=lambda b: b[1])  # sort by x_min
                 line_text = group[0][4]
                 for j in range(1, len(group)):
-                    prev_x_max = group[j-1][2]
+                    prev_x_max = group[j - 1][2]
                     curr_x_min = group[j][1]
                     gap = curr_x_min - prev_x_max
-                    # If gap is significant relative to avg char width, insert space
-                    avg_char_width = group[j-1][3] / max(len(group[j-1][4]), 1)
-                    if gap > avg_char_width * 0.3:
+                    avg_char_width = group[j - 1][3] / max(len(group[j - 1][4]), 1)
+                    if gap > avg_char_width * space_gap_ratio:
                         line_text += " " + group[j][4]
                     else:
                         line_text += group[j][4]
@@ -159,4 +166,20 @@ def process_pdf(pdf_path: str, dpi: int = 300) -> str:
 
     elapsed = time.time() - t0
     logger.info("Done in %.1fs — %d lines extracted", elapsed, len(all_lines))
-    return "\n".join(all_lines)
+
+    raw_text = "\n".join(all_lines)
+
+    # --- Post-processing cleanup ---
+    # Fix camelCase run-ons where OCR merged two words: "theBank" -> "the Bank"
+    # Matches a lowercase letter immediately followed by an uppercase letter
+    raw_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', raw_text)
+
+    # Fix missing space before common prepositions/articles when merged with prior word
+    # e.g. "paymentof" -> "payment of", "Ratejarah" -> "Rate jarah"
+    fused_words = r'\b(of|to|the|in|on|at|for|by|with|from|and|or|is|be|was|has|had|not|its|that|this|will|shall|such|any|all|upon|into)\b'
+    raw_text = re.sub(r'(\w)(' + fused_words[2:], r'\1 \2', raw_text)
+
+    # Collapse any accidental double spaces introduced above
+    raw_text = re.sub(r'  +', ' ', raw_text)
+
+    return raw_text
