@@ -5,6 +5,7 @@ os.environ["FLAGS_use_mkldnn"] = "0"
 
 import time
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,27 @@ import cv2
 logger = logging.getLogger(__name__)
 
 _ocr_instance = None
+
+
+# ---------------------------------------------------------------------------
+# Model version config
+#
+# Switching v5 <-> v6 is a one-line change here — no reinstall, no changes
+# anywhere else in the codebase, since paddleocr>=3.7.0 ships both.
+# Override via env var so it can be flipped per-deployment without a code
+# change (e.g. OCR_MODEL_VERSION=v6 in your service's env config).
+# ---------------------------------------------------------------------------
+OCR_VERSION = os.environ.get("OCR_MODEL_VERSION", "v5")  # "v5" or "v6"
+
+_MODEL_NAMES = {
+    "v5": {"det": "PP-OCRv5_server_det", "rec": "PP-OCRv5_server_rec"},
+    "v6": {"det": "PP-OCRv6_medium_det", "rec": "PP-OCRv6_medium_rec"},
+}
+
+# PaddleOCR pipeline objects are not documented as thread-safe, and app.py
+# dispatches OCR calls to a thread-pool executor. Serialize predict() calls
+# through one shared instance rather than risk concurrent-call corruption.
+_ocr_lock = threading.Lock()
 
 
 def _get_ocr():
@@ -26,38 +48,49 @@ def _get_ocr():
     except ImportError:
         raise RuntimeError("PaddleOCR not installed.")
 
-    # For air-gapped environments: use pre-downloaded models from local directory.
+    if OCR_VERSION not in _MODEL_NAMES:
+        raise RuntimeError(
+            f"Unknown OCR_MODEL_VERSION={OCR_VERSION!r}; expected one of {list(_MODEL_NAMES)}"
+        )
+    names = _MODEL_NAMES[OCR_VERSION]
+
+    # For air-gapped environments: use pre-downloaded models from local
+    # directory. Passing *_model_dir bypasses PaddleOCR's hosting-platform
+    # lookup entirely — it will not attempt any network call.
     model_base = Path(__file__).resolve().parent / "models"
-    det_dir = model_base / "en_PP-OCRv3_det_infer"
-    rec_dir = model_base / "en_PP-OCRv3_rec_infer"
-    cls_dir = model_base / "ch_ppocr_mobile_v2.0_cls_infer"
+    det_dir = model_base / names["det"]
+    rec_dir = model_base / names["rec"]
+    textline_dir = model_base / "PP-LCNet_x1_0_textline_ori"
 
     local_kwargs = {}
     if det_dir.exists() and rec_dir.exists():
         logger.info("Using local models from %s", model_base)
         local_kwargs = {
-            "det_model_dir": str(det_dir),
-            "rec_model_dir": str(rec_dir),
-            "cls_model_dir": str(cls_dir) if cls_dir.exists() else None,
+            "text_detection_model_dir": str(det_dir),
+            "text_recognition_model_dir": str(rec_dir),
         }
-        local_kwargs = {k: v for k, v in local_kwargs.items() if v is not None}
+        if textline_dir.exists():
+            local_kwargs["textline_orientation_model_dir"] = str(textline_dir)
+    else:
+        logger.warning(
+            "Local model dir missing for %s (%s / %s) — PaddleOCR will try "
+            "to download from the internet, which will fail in an "
+            "air-gapped deployment. Run fetch_models.py on an online "
+            "machine first and copy the result into %s.",
+            OCR_VERSION, names["det"], names["rec"], model_base,
+        )
 
-    # NOTE: if scan quality across banks is inconsistent (photos, low-DPI
-    # faxes, etc.), swapping en_PP-OCRv3_det/rec_infer for the "server"
-    # variants (same model family, larger backbone) is usually worth the
-    # extra latency for a batch/backend service like this one.
-
-    logger.info("Loading PaddleOCR model (CPU)...")
+    logger.info("Loading PaddleOCR %s (%s / %s, CPU)...", OCR_VERSION, names["det"], names["rec"])
     _ocr_instance = PaddleOCR(
-        lang="en",
-        use_angle_cls=True,        # per-line rotation (stamps/seals can rotate a line independent of the page)
-        det_db_thresh=0.3,
-        det_db_box_thresh=0.5,
-        det_db_unclip_ratio=1.8,
-        #det_limit_side_len=3000,   # default 960 crushes small/dense fields (date boxes, MICR) before detection even runs
-        #det_limit_type="max",
-        rec_batch_num=6,
-        drop_score=0.3,
+        text_detection_model_name=names["det"],
+        text_recognition_model_name=names["rec"],
+        use_doc_orientation_classify=False,   # we deskew ourselves in preprocess_image()
+        use_doc_unwarping=False,              # ditto — avoid doing it twice
+        use_textline_orientation=True,        # per-line rotation (stamps/seals can rotate independently)
+        text_det_thresh=0.3,
+        text_det_box_thresh=0.5,
+        text_det_unclip_ratio=1.8,
+        text_rec_score_thresh=0.3,
         enable_mkldnn=False,
         **local_kwargs,
     )
@@ -205,15 +238,15 @@ def _pdf_to_images(pdf_path: str, dpi: int = 300) -> list[tuple[int, np.ndarray]
 
 def _run_ocr(img: np.ndarray, ocr) -> list[dict[str, Any]]:
     """Run OCR on a single preprocessed image and return structured,
-    line-level results.
+    line-level results — same shape as before: [{"text","confidence","box"}].
 
-    Deliberately generic — no field semantics here. Turning these lines
-    into named fields (date, payee, amounts) belongs in a separate module
-    that owns the domain rules; this module's job is just to get clean,
-    positioned, confidence-scored text out of an image.
+    Deliberately generic — no field semantics here, same contract as the
+    2.x version. debug_inspect.py and downstream field-extraction code do
+    not need to change.
     """
     try:
-        results = ocr.ocr(img, cls=True)
+        with _ocr_lock:
+            results = ocr.predict(img)
     except Exception as exc:
         logger.warning("OCR error: %s", exc)
         return []
@@ -222,20 +255,19 @@ def _run_ocr(img: np.ndarray, ocr) -> list[dict[str, Any]]:
     if not results:
         return lines
 
-    for page_result in results:
-        if page_result is None:
-            continue
-        for line in page_result:
-            if line is None:
-                continue
-            box, (text, score) = line
+    for res in results:
+        texts = res["rec_texts"]
+        scores = res["rec_scores"]
+        polys = res["rec_polys"]  # 4-point polygon per line, same format as before
+
+        for text, score, poly in zip(texts, scores, polys):
             text = str(text).strip()
             if not text:
                 continue
             lines.append({
                 "text": text,
                 "confidence": float(score),
-                "box": box,  # 4-point polygon: [[x,y], [x,y], [x,y], [x,y]]
+                "box": np.asarray(poly).tolist(),  # keep as list of [x,y] pairs
             })
     return lines
 

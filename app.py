@@ -15,6 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
 
+from contextlib import asynccontextmanager
+from paddle_ocr import _get_ocr
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -39,8 +41,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-
-app = FastAPI(title="PaddleOCR Service", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _get_ocr()  # Load PaddleOCR model on startup
+    yield
+    
+app = FastAPI(title="PaddleOCR Service", version="1.0.0", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(TEMPLATES))
 
 

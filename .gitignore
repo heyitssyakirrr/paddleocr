@@ -9,3 +9,4 @@ __pycache__/
 *.pyd
 /debug_out 
 *.log
+/models

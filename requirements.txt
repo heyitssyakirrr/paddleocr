@@ -7,5 +7,5 @@ pypdfium2
 Pillow>=10.0.0
 numpy
 
-paddleocr==2.10.0
+paddleocr==3.7.0
 paddlepaddle==3.3.1
