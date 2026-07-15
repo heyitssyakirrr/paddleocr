@@ -82,7 +82,7 @@ async def upload(
         raise HTTPException(status_code=400, detail="No files received.")
 
     # Import here so the module (and PaddlePaddle) loads only once needed.
-    from paddle_ocr import process_pdf
+    from paddle_ocr import process_pdf, flatten_text
 
     loop    = asyncio.get_event_loop()
     results = []
@@ -133,10 +133,11 @@ async def upload(
 
         # Run OCR in thread-pool (blocking CPU work — must not run in event loop)
         try:
-            text = await loop.run_in_executor(
+            pages = await loop.run_in_executor(
                 None,
                 partial(process_pdf, str(upload_path), dpi),
             )
+            text = flatten_text(pages)
             n_lines = len([ln for ln in text.split("\n") if ln.strip()])
 
             stem        = Path(safe_name).stem.lower().replace(" ", "_")
