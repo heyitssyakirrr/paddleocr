@@ -91,7 +91,7 @@ def _get_ocr():
         text_det_box_thresh=0.5,
         text_det_unclip_ratio=1.8,
         text_rec_score_thresh=0.3,
-        enable_mkldnn=False,
+        #enable_mkldnn=False,
         **local_kwargs,
     )
     logger.info("Model loaded.")
