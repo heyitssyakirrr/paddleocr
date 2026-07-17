@@ -14,13 +14,17 @@ Your own testing found:
   `cheque_pipeline/config.py`, right above `SIGNATURE_LABELS`).
 
 So the pipeline is: **PaddleOCR finds the date anchor and its box → crop →
-TrOCR reads the crop**, and **signature detection looks directly at the ink
-in the expected signature area** — Otsu threshold, subtract printed straight
-lines (box borders), drop components too short to be a signature stroke
-(filters out printed captions like "no signature below this line"), and
-treat what survives as the signature. PP-Structure's figure/seal detection
-only runs as a secondary corroboration on the crop box — it's never what
-decides "present" vs "absent", since it has no real signature class.
+TrOCR reads the crop**, and **signature detection anchors its search band to
+the MICR line** (the printed account/cheque-number line at the bottom of
+every cheque — reliably the lowest detected text, since it's machine-printed,
+so it generalizes across cheques with different scan crop margins far
+better than a fixed page-fraction would) **then looks directly at the ink**
+in that band — Otsu threshold, subtract printed straight lines (box
+borders), drop components too short to be a signature stroke (filters out
+printed captions like "no signature below this line"), and treat what
+survives as the signature. PP-Structure's figure/seal detection only runs
+as a secondary corroboration on the crop box — it's never what decides
+"present" vs "absent", since it has no real signature class.
 
 ## New folder structure
 
@@ -99,6 +103,8 @@ output/
 ├── signatures/<name>_signature.png          # cropped signature, when found
 └── debug/<name>/
     ├── date_crop.png                        # exactly what TrOCR read — check this first
+    ├── signature_region_searched.png        # the full searched band — saved EVERY run,
+    │                                         #   found or not, so a false negative is debuggable
     └── result.json                          # full diagnostics (method used, scores, etc.)
 ```
 
@@ -114,14 +120,18 @@ verdict, TrOCR's confidence, the matched date-label text) so you can audit
   variants already in `config.DATE_LABEL_ALIASES`) matched — add whatever
   garbled form your OCR actually produced. `needs_review` means a crop was
   read but didn't match a date-like pattern — check `date_crop.png`.
-- **Signature wrong**: primary detection is ink-blob analysis, not PP-Structure —
-  check `config.SIGNATURE_REGION` first (fractional box, as fractions of image
-  width/height); narrow or move it if it's catching the bank logo or missing
-  the actual signature panel on your cheque layout. If the region is right but
-  the verdict is still wrong, check `output/debug/<name>/result.json`'s
-  `ink_ratio` against `config.SIGNATURE_INK_RATIO_THRESHOLD` — and
-  `config.SIGNATURE_MIN_COMPONENT_HEIGHT_FRAC` if printed caption text
-  (e.g. "no signature below this line") is getting counted as a signature.
+- **Signature wrong**: first open `debug/<name>/signature_region_searched.png` —
+  it's saved for every cheque now, whether or not a signature was found, so
+  you can see exactly what band was searched instead of guessing. If the
+  band itself is wrong (missing the actual signature panel, or catching
+  something else), the MICR anchor was probably off — check
+  `signature_region_box` in `result.json` and adjust
+  `config.SIGNATURE_BAND_HEIGHT_FRAC`/`SIGNATURE_BAND_BOTTOM_MARGIN_FRAC`.
+  If the band is right but the verdict is still wrong, check
+  `signature_ink_ratio` in `result.json` against
+  `config.SIGNATURE_INK_RATIO_THRESHOLD` — and
+  `config.SIGNATURE_MIN_COMPONENT_HEIGHT_FRAC` if printed caption text is
+  getting counted as a signature, or filtering out a genuinely thin/light one.
 
 ## Honest limitation
 

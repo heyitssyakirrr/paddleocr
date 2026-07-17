@@ -1,5 +1,18 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+jinja2>=3.1.0
+
+pypdfium2
+Pillow>=10.0.0
+numpy
+
+paddleocr==3.7.0
+paddlepaddle==3.3.1
 
 # --- cheque_pipeline addon: date (TrOCR) + signature (PP-Structure layout) ---
 torch>=2.2.0            # CPU wheel is fine — TrOCR only ever runs on small crops here
-transformers>=4.41.0
-sentencepiece>=0.2.0     # required by TrOCRProcessor's tokenizer
+transformers==4.46.3
+tokenizers==0.20.3
+sentencepiece==0.2.2
+huggingface_hub>=0.25,<0.26

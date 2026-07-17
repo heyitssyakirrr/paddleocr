@@ -57,7 +57,7 @@ def process_cheque(image_path: "str | Path") -> dict[str, Any]:
     lines = _run_ocr(img, ocr)  # paddle_ocr's recognizer expects the RGB array it was built around
 
     date_result = date_extractor.extract_date(img_bgr, lines)
-    signature_result = signature_extractor.detect_signature(img_bgr)
+    signature_result = signature_extractor.detect_signature(img_bgr, lines)
 
     return {
         "filename": path.name,
@@ -74,4 +74,7 @@ def process_cheque(image_path: "str | Path") -> dict[str, Any]:
         "signature_score": signature_result["score"],
         "signature_ink_ratio": signature_result["ink_ratio"],
         "signature_crop": signature_result["crop"],
+        "signature_region_crop": signature_result["region_crop"],
+        "signature_region_box": signature_result["region_box"],
+        "signature_debug_masks": signature_result["debug_masks"],
     }

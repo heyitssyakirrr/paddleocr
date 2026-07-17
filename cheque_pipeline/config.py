@@ -45,11 +45,24 @@ LAYOUT_MODEL_NAME = "PP-DocLayout-S"  # 23-class model, includes "figure" and "s
 SIGNATURE_LABELS = {"figure", "seal", "image"}  # "image" covers the 20-cls model naming too, if swapped in
 SIGNATURE_LAYOUT_SCORE_THRESHOLD = 0.3
 
-# Restrict candidate boxes to the region cheques actually put a signature in
-# (bottom band, right-of-center) — otherwise the bank's logo/icon (top-left,
-# also non-text ink) gets misclassified as the signature. Fractions of
-# (width, height): (x0, y0, x1, y1). Tune to your cheque layout.
-SIGNATURE_REGION: tuple[float, float, float, float] = (0.30, 0.55, 1.0, 0.90)
+# Signature band geometry — ANCHORED to the MICR line (the printed
+# account/cheque-number line at the very bottom of every cheque), not a
+# fixed fraction of the page. A fixed fraction broke across real scans
+# with different crop margins/resolutions per cheque; anchoring to the
+# MICR line — reliably the lowest detected text on any cheque, since it's
+# machine-printed — makes the band move with each cheque's actual layout
+# instead of assuming every image is cropped identically.
+#
+# Band = from (MICR line's top y - BAND_HEIGHT_FRAC * image_height) up to
+# (MICR line's top y - BAND_BOTTOM_MARGIN_FRAC * image_height), spanning
+# most of the width.
+SIGNATURE_BAND_HEIGHT_FRAC = 0.32
+SIGNATURE_BAND_BOTTOM_MARGIN_FRAC = 0.02
+SIGNATURE_BAND_X_MARGIN_FRAC = (0.03, 0.02)  # (left, right) margins, as fractions of width
+
+# Fallback ONLY if no OCR lines were detected at all (so no MICR anchor
+# exists to anchor off of) — same fixed box as before, better than nothing.
+SIGNATURE_REGION_FALLBACK: tuple[float, float, float, float] = (0.30, 0.55, 1.0, 0.90)
 
 # ---------------------------------------------------------------------------
 # Primary signature detection: contour/ink-blob analysis inside

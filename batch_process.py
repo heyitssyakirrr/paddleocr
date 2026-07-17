@@ -28,6 +28,7 @@ from pathlib import Path
 from pathlib import PurePosixPath
 
 import cv2
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -73,8 +74,25 @@ def process_one(path: Path) -> dict:
     debug_dir.mkdir(parents=True, exist_ok=True)
     if result["date_crop"] is not None:
         cv2.imwrite(str(debug_dir / "date_crop.png"), result["date_crop"])
+    # Always save the searched signature band, found-or-not — this is the
+    # only way to tell WHY a cheque came back signature_exists=False
+    # (wrong region vs. thresholds too strict vs. genuinely no signature)
+    # instead of debugging it blind.
+    if result["signature_region_crop"] is not None:
+        cv2.imwrite(str(debug_dir / "signature_region_searched.png"), result["signature_region_crop"])
+    # The three intermediate masks — this is what actually shows you WHY
+    # ink_ratio came out the way it did, stage by stage.
+    for mask_name, mask_img in (result["signature_debug_masks"] or {}).items():
+        cv2.imwrite(str(debug_dir / f"signature_{mask_name}.png"), mask_img)
 
-    diagnostics = {k: v for k, v in result.items() if not isinstance(v, (type(None),)) and "crop" not in k}
+    # previous version's `if not isinstance(v, type(None))` filter silently
+    # dropped every None-valued field (e.g. signature_score when no layout
+    # corroboration ran) from result.json — exactly the fields worth
+    # seeing while debugging. Only actual image arrays are excluded now.
+    diagnostics = {
+        k: v for k, v in result.items()
+        if not isinstance(v, np.ndarray) and k != "signature_debug_masks"
+    }
     with open(debug_dir / "result.json", "w", encoding="utf-8") as f:
         json.dump(diagnostics, f, indent=2, default=str)
 

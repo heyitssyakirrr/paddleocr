@@ -11,3 +11,4 @@ __pycache__/
 *.log
 /models
 /date_extraction_debug
+/output
